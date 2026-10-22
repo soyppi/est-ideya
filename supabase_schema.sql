@@ -57,6 +57,14 @@ create index if not exists ideas_status_idx on public.ideas(status);
 create index if not exists comments_idea_idx on public.comments(idea_id);
 create index if not exists history_idea_idx on public.status_history(idea_id, created_at);
 
+-- Keep defaults and status validation consistent when reapplying the schema.
+alter table public.profiles alter column name set default 'Участник';
+alter table public.ideas alter column category set default 'Другое';
+alter table public.ideas alter column status set default 'Новое';
+alter table public.ideas drop constraint if exists ideas_status_check;
+alter table public.ideas add constraint ideas_status_check
+  check (status in ('Новое','На рассмотрении','Принято','Отклонено','Реализовано'));
+
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer set search_path = public
 as $$
