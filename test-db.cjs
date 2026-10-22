@@ -100,5 +100,12 @@ assert.equal((await db.query('select count(*)::int n from ideas where id between
 assert.equal((await as('anon',null,'select * from ideas where id between -91007 and -91001')).rows.length,6);
 assert.equal((await db.query('select count(distinct status)::int n from ideas where id between -91007 and -91001')).rows[0].n,5);
 console.log('PASS: reproducible demo reset twice; seven fixtures; all five statuses; hidden idea excluded for guest.');
+// Ordinary publication must also work with direct INSERT unavailable, as on a
+// locked-down installation. The RPC is the only browser publication contract.
+await db.exec('revoke insert on public.ideas from authenticated');
+const rpcOnly=(await as('authenticated',bob,`select submit_idea('cccccccc-cccc-4ccc-8ccc-cccccccccccc','RPC only idea','Problem','Solution','Другое') as id`)).rows[0].id;
+assert(rpcOnly);
+await assert.rejects(()=>as('authenticated',bob,`insert into ideas(user_id,title,problem,solution) values('${bob}','Denied direct idea','Problem','Solution')`),/permission denied/);
+console.log('PASS: ordinary user creates via RPC while direct table INSERT is denied');
 await db.close();
 })().catch(error=>{console.error(error.message);process.exitCode=1});
