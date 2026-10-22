@@ -1,5 +1,6 @@
 -- Schema for "Есть идея" on GitHub Pages + Supabase.
 -- Run the entire file in Supabase SQL Editor. Never put service_role keys in browser code.
+begin;
 create extension if not exists pgcrypto;
 
 create table if not exists public.profiles (
@@ -81,6 +82,7 @@ alter table public.comments enable row level security;
 alter table public.status_history enable row level security;
 
 drop policy if exists "profiles readable by signed in users" on public.profiles;
+drop policy if exists "public profile names readable" on public.profiles;
 create policy "public profile names readable" on public.profiles for select to anon, authenticated using (true);
 drop policy if exists "user updates own name only" on public.profiles;
 create policy "user updates own name only" on public.profiles for update to authenticated using (id = auth.uid()) with check (id = auth.uid());
@@ -166,15 +168,30 @@ begin
 end;
 $$;
 
+-- Supabase can grant table-wide privileges by default. Reset them first:
+-- a column-level GRANT alone does not remove an existing table-wide UPDATE.
+revoke all privileges on public.profiles, public.ideas, public.votes, public.comments, public.status_history from public, anon, authenticated;
+revoke update (name, role, created_at, id) on public.profiles from public, anon, authenticated;
+revoke update (id, user_id, title, problem, solution, category, status, created_at, deleted_at, deleted_reason, deleted_by) on public.ideas from public, anon, authenticated;
+revoke all privileges on sequence public.ideas_id_seq, public.comments_id_seq, public.status_history_id_seq from public, anon, authenticated;
+revoke execute on function public.handle_new_user() from public, anon, authenticated;
+revoke execute on function public.is_moderator() from public, anon, authenticated;
+revoke execute on function public.change_idea_status(bigint,text,text) from public, anon, authenticated;
+revoke execute on function public.moderator_delete_idea(bigint,text) from public, anon, authenticated;
+revoke execute on function public.moderator_delete_comment(bigint,text) from public, anon, authenticated;
+revoke execute on function public.moderator_restore_idea(bigint) from public, anon, authenticated;
+
 grant usage on schema public to anon, authenticated;
 grant select on public.profiles, public.ideas, public.votes, public.comments, public.status_history to anon, authenticated;
 grant insert on public.ideas, public.comments to authenticated;
 grant update (name) on public.profiles to authenticated;
 grant update (title, problem, solution, category) on public.ideas to authenticated;
 grant insert, delete on public.votes to authenticated;
-grant usage, select on all sequences in schema public to authenticated;
+grant usage on sequence public.ideas_id_seq, public.comments_id_seq to authenticated;
 grant execute on function public.is_moderator() to anon, authenticated;
 grant execute on function public.change_idea_status(bigint,text,text) to authenticated;
 grant execute on function public.moderator_delete_idea(bigint,text) to authenticated;
 grant execute on function public.moderator_delete_comment(bigint,text) to authenticated;
 grant execute on function public.moderator_restore_idea(bigint) to authenticated;
+
+commit;
