@@ -4,14 +4,14 @@ const assert = require('node:assert/strict');
 const source=fs.readFileSync(__dirname+'/app.js','utf8');
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 function harness(configured=true){
- const elements=new Map();
- function el(s){if(!elements.has(s))elements.set(s,{value:'',innerHTML:'',textContent:'',options:[{}],addEventListener(){}});return elements.get(s)}
+ const elements=new Map(),nodes=new Map();
+ function el(s){if(!elements.has(s))elements.set(s,{value:'',innerHTML:'',textContent:'',options:[{}],isConnected:true,setAttribute(key,value){this[key]=value},removeAttribute(key){delete this[key]},querySelectorAll(){return []},addEventListener(){}});return elements.get(s)}
  const timers=[],queries=[],responses=[];let callback,authLock=false;
- const client={auth:{async getSession(){assert.equal(authLock,false,'auth API called under auth lock');return {data:{session:null}}},onAuthStateChange(fn){callback=fn}},from(table){const query={table};const chain=new Proxy(query,{get(target,key){if(key==='then')return (resolve,reject)=>{const response=responses.shift()||{data:[],error:null};return Promise.resolve(response).then(resolve,reject)};return (...args)=>{target[key]=args;return chain}}});queries.push(query);return chain}};
- const context=vm.createContext({document:{querySelector:el,querySelectorAll:()=>[]},window:{location:{href:'https://soyppi.github.io/est-ideya/?test=1#test'},supabase:{createClient:()=>client},SUPABASE_URL:configured?'https://example.supabase.co':'https://YOUR_PROJECT_ID.supabase.co',SUPABASE_ANON_KEY:'public-key'},console,setTimeout(fn){timers.push(fn)},FormData,Date,URL});
+ const client={auth:{async getSession(){assert.equal(authLock,false,'auth API called under auth lock');return {data:{session:this.session||null}}},onAuthStateChange(fn){callback=fn}},from(table){const query={table,calls:[]};const chain=new Proxy(query,{get(target,key){if(key==='then')return (resolve,reject)=>{const response=responses.shift()||{data:[],error:null};return Promise.resolve(response).then(resolve,reject)};return (...args)=>{target.calls.push([key,args]);target[key]=args;return chain}}});queries.push(query);return chain}};
+ const context=vm.createContext({document:{querySelector:el,querySelectorAll:s=>nodes.get(s)||[]},window:{location:{href:'https://soyppi.github.io/est-ideya/?test=1#test'},supabase:{createClient:()=>client},SUPABASE_URL:configured?'https://example.supabase.co':'https://YOUR_PROJECT_ID.supabase.co',SUPABASE_ANON_KEY:'public-key'},console,setTimeout(fn){timers.push(fn)},FormData,Date,URL,URLSearchParams,setInterval(){return 1},clearInterval(){}});
  vm.runInContext('var supabase = window.supabase;',context);
  vm.runInContext(source,context);
- return {el,timers,queries,responses,context,client,fireAuth(){authLock=true;callback();authLock=false}};
+ return {el,nodes,timers,queries,responses,context,client,fireAuth(event){authLock=true;callback(event);authLock=false}};
 }
 (async()=>{
 
@@ -67,6 +67,71 @@ function harness(configured=true){
  assert.match(signup.el('#formError').innerHTML,/лимит/);
  await signup.el('#authForm').onsubmit({preventDefault(){},target:{}});assert.equal(signups.length,2,'cooldown must prevent another provider request');
  console.log('PASS: real signup handler normalizes custom domain, uses correct redirect, explains provider quota and suppresses repeated sends');
+
+ // Password recovery stays inside the SDK and waits until the auth lock releases.
+ const recovery=harness();await flush();let resets=[];
+ recovery.client.auth.resetPasswordForEmail=async(email,options)=>{resets.push({email,options});return {error:null}};
+ await vm.runInContext("requestPasswordReset(' person@пример.рф ')",recovery.context);
+ assert.equal(resets[0].email,'person@xn--e1afmkfd.xn--p1ai');assert.equal(resets[0].options.redirectTo,'https://soyppi.github.io/est-ideya/');
+ await assert.rejects(()=>vm.runInContext("requestPasswordReset('person@example.com')",recovery.context),/Слишком много/);assert.equal(resets.length,1);
+ recovery.context.resetShown=0;vm.runInContext('resetPasswordModal=()=>{resetShown++}',recovery.context);
+ recovery.client.auth.session={user:{id:'recovery-user',email:'person@example.invalid',user_metadata:{name:'Recovery user'}}};
+ recovery.fireAuth('PASSWORD_RECOVERY');assert.equal(recovery.context.resetShown,0,'no auth API or modal work inside the SDK callback');
+ await recovery.timers.shift()();assert.equal(recovery.context.resetShown,1);
+ let updates=[];recovery.client.auth.updateUser=async params=>{updates.push(params);return {error:null}};
+ await assert.rejects(()=>vm.runInContext("updateRecoveredPassword('short','short')",recovery.context),/минимум 8/);
+ await assert.rejects(()=>vm.runInContext("updateRecoveredPassword('TEST-password-123','different')",recovery.context),/не совпадают/);assert.equal(updates.length,0);
+ await vm.runInContext("updateRecoveredPassword('  TEST-password-123  ','  TEST-password-123  ')",recovery.context);
+ assert.equal(updates[0].password,'  TEST-password-123  ','password must never be trimmed or normalized');
+ vm.runInContext('setRecoveryMode(false)',recovery.context);await assert.rejects(()=>vm.runInContext("updateRecoveredPassword('TEST-password-123','TEST-password-123')",recovery.context),/свежую ссылку/);
+ const recoveredForm=harness();await flush();let updatedForm=0;
+ recoveredForm.client.auth.updateUser=async params=>{assert.equal(params.password,'TEST-only-new-password');updatedForm++;return {error:null}};
+ recoveredForm.context.FormData=class{*[Symbol.iterator](){yield ['password','TEST-only-new-password'];yield ['repeat','TEST-only-new-password']}};
+ vm.runInContext("modal=()=>{};currentUser={id:'test-user',role:'user'};setRecoveryMode(true);resetPasswordModal()",recoveredForm.context);
+ await recoveredForm.el('#resetPasswordForm').onsubmit({preventDefault(){},target:{}});
+ assert.equal(updatedForm,1);assert.equal(vm.runInContext('recoveringPassword',recoveredForm.context),false);assert.match(recoveredForm.el('#toast').textContent,/Новый пароль сохранён/);
+ const recoveryForm=harness();await flush();let requestedForm=0;
+ recoveryForm.client.auth.resetPasswordForEmail=async(email,options)=>{assert.equal(email,'person@company.custom');assert.equal(options.redirectTo,'https://soyppi.github.io/est-ideya/');requestedForm++;return {error:null}};
+ recoveryForm.context.FormData=class{get(name){return name==='email'?'person@company.custom':null}*[Symbol.iterator](){yield ['email','person@company.custom']}};
+ recoveryForm.context.lastMarkup='';vm.runInContext("modal=content=>{lastMarkup=content};recoveryRequestModal()",recoveryForm.context);
+ const requestHandler=recoveryForm.el('#recoveryForm').onsubmit;await requestHandler({preventDefault(){},target:{}});
+ assert.equal(requestedForm,1);assert.match(recoveryForm.context.lastMarkup,/Если аккаунт с этим адресом существует/);
+ await requestHandler({preventDefault(){},target:{}});assert.equal(requestedForm,1,'repeat mail blocked');
+ const authUi=harness();await flush();authUi.context.lastMarkup='';vm.runInContext("modal=content=>{lastMarkup=content};authModal('login','person@example.invalid')",authUi.context);
+ assert.match(authUi.context.lastMarkup,/forgotPassword/);assert.match(authUi.context.lastMarkup,/current-password/);assert.match(authUi.context.lastMarkup,/data-password-toggle/);
+ authUi.context.window.location.href='https://soyppi.github.io/est-ideya/#error=access_denied&error_code=otp_expired';assert(vm.runInContext('authLinkError()',authUi.context));
+ assert.match(vm.runInContext("fail({code:'invalid_credentials'})",authUi.context),/Повторная регистрация/);
+ console.log('PASS: password recovery request and actual forms; IDN redirect, rate limit, deferred recovery callback, session guard, exact password preservation, mismatch rejection, successful update, neutral email notice, password reveal and expired-link detection');
+
+ const loginRaw=harness();await flush();let loginParams;
+ loginRaw.client.auth.signInWithPassword=async params=>{loginParams=params;return {error:null}};
+ loginRaw.context.FormData=class{*[Symbol.iterator](){yield ['email',' Person@company.custom '];yield ['password','  TEST-only-password  ']}};
+ vm.runInContext("modal=()=>{};authModal('login')",loginRaw.context);await loginRaw.el('#authForm').onsubmit({preventDefault(){},target:{}});
+ assert.equal(loginParams.password,'  TEST-only-password  ');assert.equal(loginParams.email,'Person@company.custom');
+ console.log('PASS: actual login handler preserves every password character and normalizes only the email');
+
+ const cards=harness();await flush();const card={dataset:{cardId:'88'}};cards.nodes.set('[data-card-id]',[card]);cards.context.opened=[];vm.runInContext('detail=id=>opened.push(id)',cards.context);
+ cards.responses.push({data:[{id:88,title:'Card title',problem:'Card body',category:'Учёба',status:'Новое',created_at:'2026-10-29T10:00:00Z'}],error:null},{data:[],error:null},{data:[],error:null});
+ await vm.runInContext('loadIdeas()',cards.context);card.onclick({target:{closest:()=>null}});assert.equal(cards.context.opened.length,1);
+ card.onclick({target:{closest:()=>({tagName:'BUTTON'})}});assert.equal(cards.context.opened.length,1,'independent controls must not open the idea');
+ card.onkeydown({target:card,key:'Enter',preventDefault(){}});assert.equal(cards.context.opened.length,2);card.onkeydown({target:{},key:'Enter',preventDefault(){throw Error('nested button')}});
+ const replies=harness();await flush();let replyCall;
+ replies.client.rpc=async(name,args)=>{replyCall={name,args};return {data:9,error:null}};
+ await vm.runInContext("sendDiscussionMessage(7,'Ответ', 'uuid',21)",replies.context);assert.equal(replyCall.name,'submit_comment_reply');assert.equal(replyCall.args.p_reply_to_id,21);
+ await assert.rejects(()=>vm.runInContext("sendDiscussionMessage(7,'Ответ','uuid',-1)",replies.context),/Неверное сообщение/);
+ replies.context.quoteMessage={id:5,user_id:'other',body:'Reply',reply_to_id:21,reply:{id:21,body:'<script>source</script>',deleted_at:null,profiles:{name:'<Author>'}}};
+ let quote=vm.runInContext('discussionMessage(quoteMessage)',replies.context);assert(quote.includes('&lt;script&gt;'));assert(quote.includes('&lt;Author&gt;'));assert(!quote.includes('data-chat-reply'),'guests cannot reply');
+ replies.context.quoteMessage.reply.deleted_at='2026-10-29';quote=vm.runInContext('discussionMessage(quoteMessage)',replies.context);assert(!quote.includes('source'));assert(quote.includes('скрыто'));
+ const notices=harness();await flush();vm.runInContext("currentUser={id:'owner',role:'user'}",notices.context);
+ notices.responses.push({data:[{id:1,idea_id:88,idea_title:'<Title>',from_status:'Новое',to_status:'На рассмотрении',reason:'<script>reason</script>',read_at:null,created_at:'2026-10-29T10:00:00Z'}],error:null},{data:null,count:1,error:null});
+ await vm.runInContext('refreshNotifications()',notices.context);assert.equal(notices.el('#notificationCount').textContent,'1');assert.equal(notices.el('#notificationCount').hidden,false);
+ for(const q of notices.queries.slice(-2))assert(q.calls.some(([name,args])=>name==='eq'&&args[0]==='user_id'&&args[1]==='owner'));
+ const notificationMarkup=vm.runInContext('notificationItem(notificationCache.items[0])',notices.context);assert(notificationMarkup.includes('&lt;Title&gt;'));assert(notificationMarkup.includes('&lt;script&gt;'));assert(notificationMarkup.includes('notification-unread'));
+ await vm.runInContext('markNotificationsRead(1)',notices.context);const update=notices.queries.find(q=>q.update);assert(update.calls.some(([name,args])=>name==='eq'&&args[0]==='user_id'&&args[1]==='owner'));assert(update.calls.some(([name,args])=>name==='eq'&&args[0]==='id'&&args[1]===1));
+ assert.equal(notices.el('#notificationCount').hidden,true);
+ let resolveSlow;notices.responses.push(new Promise(resolve=>resolveSlow=resolve),{count:9,data:null,error:null});const slowNotice=vm.runInContext('refreshNotifications()',notices.context);await flush();
+ notices.responses.push({data:[],error:null},{count:0,data:null,error:null});await vm.runInContext('refreshNotifications()',notices.context);resolveSlow({data:[],error:null});await slowNotice;assert.equal(notices.el('#notificationCount').hidden,true,'stale poll cannot revive read badge');
+ console.log('PASS: actual whole-card mouse/keyboard handlers ignore controls; reply RPC and hidden/escaped quotes; private notification filters, read updates, escaped content and stale-poll protection');
  const chat=harness();await flush();
  chat.responses.push({data:{id:7,title:'Discussion idea',status:'Принято'},error:null});
  chat.responses.push({data:[{id:2,user_id:'another',body:'Second',created_at:'2026-10-23T11:00:00Z',profiles:{name:'Another'}},{id:1,user_id:'me',body:'<script>bad</script>\nFirst',created_at:'2026-10-23T10:00:00Z',profiles:{name:'Me'}}],count:2,error:null});
