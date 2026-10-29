@@ -153,5 +153,16 @@ assert((await db.query('select read_at from notifications where id=$1',[note.id]
 await assert.rejects(()=>as('authenticated',mod,`select change_idea_status(${rpcOnly},'Принято',chr(8203))`),/объяснение/);
 assert.equal((await db.query('select count(*)::int n from notifications where idea_id=$1',[rpcOnly])).rows[0].n,1);
 console.log('PASS: replies bound to visible parent in same idea; retry idempotent; hidden quotes denied; one private notification per status transition; owner-only read/update; forging blocked; failed transition creates nothing');
+await db.exec(fs.readFileSync(__dirname+'/profiles_migration.sql','utf8'));
+await db.exec(fs.readFileSync(__dirname+'/profiles_migration.sql','utf8'));
+await as('authenticated',alice,`update profiles set name='Лисёнок',avatar='fox' where id='${alice}'`);
+assert.equal((await as('anon',null,`select name,avatar from profiles where id='${alice}'`)).rows[0].avatar,'fox');
+await as('authenticated',bob,`update profiles set name='Подмена',avatar='dog' where id='${alice}'`);
+assert.equal((await db.query('select name from profiles where id=$1',[alice])).rows[0].name,'Лисёнок');
+await assert.rejects(()=>as('authenticated',alice,`update profiles set avatar='https://evil.invalid/image' where id='${alice}'`),/profiles_avatar_check/);
+await assert.rejects(()=>as('authenticated',alice,`update profiles set name=chr(8203) where id='${alice}'`),/profiles_visible_name/);
+await denied(alice,`update profiles set role='admin',avatar='dog' where id='${alice}'`);
+await assert.rejects(()=>as('anon',null,`update profiles set avatar='dog' where id='${alice}'`),/permission denied/);
+console.log('PASS: repeatable avatar migration; owner edits name/avatar; guest reads animal; another user cannot edit; invalid avatar and invisible name rejected; role escalation and anonymous update denied');
 await db.close();
 })().catch(error=>{console.error(error.message);process.exitCode=1});
