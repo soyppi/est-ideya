@@ -107,5 +107,20 @@ const rpcOnly=(await as('authenticated',bob,`select submit_idea('cccccccc-cccc-4
 assert(rpcOnly);
 await assert.rejects(()=>as('authenticated',bob,`insert into ideas(user_id,title,problem,solution) values('${bob}','Denied direct idea','Problem','Solution')`),/permission denied/);
 console.log('PASS: ordinary user creates via RPC while direct table INSERT is denied');
+
+// Applying again must preserve data and security rules.
+await db.exec(fs.readFileSync(__dirname+'/visible_text_migration.sql','utf8'));
+const invisible=['\u200b','\u2060','\u2800','\u3164','\uffa0','\u115f','\u1160','\u034f','\u00a0\t\n','\u202e','\ufe0f','\u0301','\u{e0100}'];
+for(const text of invisible){
+ assert.equal((await db.query('select public.app_visible_text($1) v',[text])).rows[0].v,'');
+ await assert.rejects(()=>as('authenticated',bob,`select submit_idea(gen_random_uuid(),'Valid title',$q$${text}$q$,'Solution','Учёба')`),/visible|text_limits/);
+ await assert.rejects(()=>as('authenticated',bob,`select submit_comment(gen_random_uuid(),${rpcOnly},$q$${text}$q$)`),/visible|body_limits/);
+ await assert.rejects(()=>as('authenticated',mod,`select change_idea_status(${rpcOnly},'На рассмотрении',$q$${text}$q$)`),/объяснение/);
+ await assert.rejects(()=>as('authenticated',mod,`select moderator_delete_idea(${rpcOnly},$q$${text}$q$)`),/причину/);
+ await assert.rejects(()=>db.query('update profiles set name=$1 where id=$2',[text,bob]),/visible|name_limits/);
+}
+await assert.rejects(()=>db.query('update ideas set title=$1 where id=$2',['\u200b\u2800\u3164',rpcOnly]),/visible/);
+assert.equal((await db.query('select public.app_visible_text($1) v',['Текст 👩‍🎓 é'])).rows[0].v,'Текст👩🎓e');
+console.log('PASS: invisible text rejected in direct writes and RPCs; names, titles, idea fields, messages, reasons; Unicode accents and emoji allowed');
 await db.close();
 })().catch(error=>{console.error(error.message);process.exitCode=1});

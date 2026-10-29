@@ -14,6 +14,20 @@ function harness(configured=true){
  return {el,timers,queries,responses,context,client,fireAuth(){authLock=true;callback();authLock=false}};
 }
 (async()=>{
+
+ const validation=harness(false);
+ for(const value of ['\u200b','\u2800','\u3164','\u2060','\u034f','\ufe0f','\u0301',' \t\n']){
+  validation.context.testValue=value;assert.throws(()=>vm.runInContext('requireText(testValue)',validation.context),/видимых/);
+ }
+ assert.equal(vm.runInContext("requireText('Работает 👩‍🎓')",validation.context),'Работает 👩‍🎓');
+ assert.equal(vm.runInContext("normalizeEmail('  user@company.custom  ')",validation.context),'user@company.custom');
+ assert.equal(vm.runInContext("normalizeEmail('user@пример.рф')",validation.context),'user@xn--e1afmkfd.xn--p1ai');
+ assert.throws(()=>vm.runInContext("normalizeEmail('user@com\\u200bpany.ru')",validation.context),/невидимые/);
+ assert.match(vm.runInContext("fail({code:'email_address_invalid'})",validation.context),/отклонил/);
+ assert.match(vm.runInContext("fail({code:'over_email_send_rate_limit'})",validation.context),/лимит/);
+ assert.throws(()=>vm.runInContext('authCooldown()',validation.context),/Слишком много/);
+ assert.doesNotThrow(()=>vm.runInContext('authCooldown(false)',validation.context),'email quota must not block password login');
+ console.log('PASS: invisible form content, custom and international domains, translated auth errors and rate cooldown');
  const missing=harness(false);await flush();assert.match(missing.el('#ideas').innerHTML,/не настроено/);vm.runInContext("authModal('login');loadIdeas()",missing.context);assert.match(missing.el('#toast').textContent,/не настроено/);assert.equal(missing.queries.length,0);
  const redirect=harness(false);assert.equal(vm.runInContext('confirmationRedirectUrl()',redirect.context),'https://soyppi.github.io/est-ideya/');
  const normal=harness();await flush();assert.match(normal.el('#ideas').innerHTML,/Пока ничего не найдено/);let resendParams;normal.client.auth.resend=async params=>{resendParams=params;return {error:null}};await vm.runInContext("resendConfirmation('test@example.invalid')",normal.context);assert.equal(resendParams.options.emailRedirectTo,'https://soyppi.github.io/est-ideya/');assert.equal(resendParams.type,'signup');assert.equal(resendParams.email,'test@example.invalid');normal.fireAuth();assert.equal(normal.timers.length,1);await normal.timers.shift()();
@@ -40,6 +54,19 @@ function harness(configured=true){
  const denied=await vm.runInContext("publishIdea({title:'Test',problem:'Problem',solution:'Solution',category:'Учёба'},'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')",publication.context);
  assert.equal(denied.error.message,'permission denied');assert(!publication.queries.some(q=>q.insert),'RPC failure must not fall back to direct INSERT');
  console.log('PASS: actual form delegates to publication RPC; request UUID passed; no direct INSERT fallback on failure');
+
+ // Exercise the actual registration handler with a mock provider: no real emails.
+ const signup=harness();await flush();let signups=[];
+ signup.client.auth.signUp=async params=>{signups.push(params);return {data:{session:null},error:null}};
+ signup.context.FormData=class{*[Symbol.iterator](){yield ['name','Тест'];yield ['email','person@пример.рф'];yield ['password','TEST-ONLY-DO-NOT-USE']}};
+ vm.runInContext("modal=()=>{};authModal('register')",signup.context);
+ await signup.el('#authForm').onsubmit({preventDefault(){},target:{}});
+ assert.equal(signups.length,1);assert.equal(signups[0].email,'person@xn--e1afmkfd.xn--p1ai');assert.equal(signups[0].options.emailRedirectTo,'https://soyppi.github.io/est-ideya/');
+ signup.client.auth.signUp=async()=>{signups.push({});return {error:{code:'over_email_send_rate_limit',status:429}}};
+ vm.runInContext("authModal('register')",signup.context);await signup.el('#authForm').onsubmit({preventDefault(){},target:{}});
+ assert.match(signup.el('#formError').innerHTML,/лимит/);
+ await signup.el('#authForm').onsubmit({preventDefault(){},target:{}});assert.equal(signups.length,2,'cooldown must prevent another provider request');
+ console.log('PASS: real signup handler normalizes custom domain, uses correct redirect, explains provider quota and suppresses repeated sends');
  const chat=harness();await flush();
  chat.responses.push({data:{id:7,title:'Discussion idea',status:'Принято'},error:null});
  chat.responses.push({data:[{id:2,user_id:'another',body:'Second',created_at:'2026-10-23T11:00:00Z',profiles:{name:'Another'}},{id:1,user_id:'me',body:'<script>bad</script>\nFirst',created_at:'2026-10-23T10:00:00Z',profiles:{name:'Me'}}],count:2,error:null});
@@ -51,7 +78,7 @@ function harness(configured=true){
  let sent;chat.client.rpc=async(name,args)=>{sent={name,args};return {data:8,error:null}};
  await vm.runInContext("sendDiscussionMessage(7,'  Hello  ','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')",chat.context);
  assert.equal(sent.name,'submit_comment');assert.equal(sent.args.p_body,'Hello');assert.equal(sent.args.p_idea_id,7);
- await assert.rejects(()=>vm.runInContext("sendDiscussionMessage(7,'   ','request')",chat.context),/Напиши сообщение/);
+ await assert.rejects(()=>vm.runInContext("sendDiscussionMessage(7,'   ','request')",chat.context),/видимых символов/);
  chat.responses.push({data:null,error:null});await assert.rejects(()=>vm.runInContext('readDiscussion(7)',chat.context),/Идея скрыта/);
  assert.match(source,/data-chat=/);assert.match(source,/discussion\(Number\(b.dataset.chat\)\)/);assert.match(source,/disposed=true;clearInterval\(timer\)/);
  console.log('PASS: discussion routing, message ordering, hidden parent, escaped bubbles, own message style, ordinary-user restrictions, RPC send validation and cleanup');
