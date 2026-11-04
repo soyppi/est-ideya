@@ -3,15 +3,15 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const source=fs.readFileSync(__dirname+'/app.js','utf8');
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
-function harness(configured=true){
+function harness(configured=true,storage=new Map()){
  const elements=new Map(),nodes=new Map();
  function el(s){if(!elements.has(s))elements.set(s,{value:'',innerHTML:'',textContent:'',dataset:{},options:[{}],isConnected:true,setAttribute(key,value){this[key]=value},removeAttribute(key){delete this[key]},querySelectorAll(){return []},addEventListener(){}});return elements.get(s)}
  const timers=[],queries=[],responses=[];let callback,authLock=false;
  const client={auth:{async getSession(){assert.equal(authLock,false,'auth API called under auth lock');return {data:{session:this.session||null}}},onAuthStateChange(fn){callback=fn}},from(table){const query={table,calls:[]};const chain=new Proxy(query,{get(target,key){if(key==='then')return (resolve,reject)=>{const response=responses.shift()||{data:[],error:null};return Promise.resolve(response).then(resolve,reject)};return (...args)=>{target.calls.push([key,args]);target[key]=args;return chain}}});queries.push(query);return chain}};
- const context=vm.createContext({document:{querySelector:el,querySelectorAll:s=>nodes.get(s)||[]},window:{location:{href:'https://soyppi.github.io/est-ideya/?test=1#test'},supabase:{createClient:()=>client},SUPABASE_URL:configured?'https://example.supabase.co':'https://YOUR_PROJECT_ID.supabase.co',SUPABASE_ANON_KEY:'public-key'},console,setTimeout(fn){timers.push(fn)},FormData,Date,URL,URLSearchParams,setInterval(){return 1},clearInterval(){}});
+ const context=vm.createContext({document:{querySelector:el,querySelectorAll:s=>nodes.get(s)||[]},window:{localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,String(value)),removeItem:key=>storage.delete(key)},location:{href:'https://soyppi.github.io/est-ideya/?test=1#test'},supabase:{createClient:()=>client},SUPABASE_URL:configured?'https://example.supabase.co':'https://YOUR_PROJECT_ID.supabase.co',SUPABASE_ANON_KEY:'public-key'},console,setTimeout(fn){timers.push(fn)},FormData,Date,URL,URLSearchParams,setInterval(){return 1},clearInterval(){}});
  vm.runInContext('var supabase = window.supabase;',context);
  vm.runInContext(source,context);
- return {el,nodes,timers,queries,responses,context,client,fireAuth(event){authLock=true;callback(event);authLock=false}};
+ return {el,nodes,timers,queries,responses,context,client,storage,fireAuth(event){authLock=true;callback(event);authLock=false}};
 }
 (async()=>{
 
@@ -62,10 +62,20 @@ function harness(configured=true){
  vm.runInContext("modal=()=>{};authModal('register')",signup.context);
  await signup.el('#authForm').onsubmit({preventDefault(){},target:{}});
  assert.equal(signups.length,1);assert.equal(signups[0].email,'person@xn--e1afmkfd.xn--p1ai');assert.equal(signups[0].options.emailRedirectTo,'https://soyppi.github.io/est-ideya/');
+ await signup.el('#authForm').onsubmit({preventDefault(){},target:{}});assert.equal(signups.length,1,'successful signup must reserve the resend window');
+ const reopened=harness(true,signup.storage);await flush();await assert.rejects(()=>vm.runInContext("resendConfirmation('person@example.invalid')",reopened.context),/Слишком много/);assert.doesNotThrow(()=>vm.runInContext('authCooldown(false)',reopened.context),'email cooldown must not block password login after reload');
+ signup.storage.clear();vm.runInContext('emailRetryAt=0;authRetryAt=0',signup.context);
  signup.client.auth.signUp=async()=>{signups.push({});return {error:{code:'over_email_send_rate_limit',status:429}}};
  vm.runInContext("authModal('register')",signup.context);await signup.el('#authForm').onsubmit({preventDefault(){},target:{}});
  assert.match(signup.el('#formError').innerHTML,/лимит/);
  await signup.el('#authForm').onsubmit({preventDefault(){},target:{}});assert.equal(signups.length,2,'cooldown must prevent another provider request');
+ const waits=harness();await flush();let releaseMail,mailCount=0;waits.client.auth.resend=()=>{mailCount++;return new Promise(resolve=>releaseMail=resolve)};
+ const pendingMail=vm.runInContext("resendConfirmation('person@example.invalid')",waits.context);await flush();await assert.rejects(()=>vm.runInContext("resendConfirmation('person@example.invalid')",waits.context),/уже отправляется/);assert.equal(mailCount,1);
+ const emailButton={dataset:{},textContent:'Отправить',hasAttribute:key=>key==='data-auth-email',closest:()=>null,setAttribute(){}};const loginButton={dataset:{},textContent:'Войти',hasAttribute:()=>false,closest:()=>null,setAttribute(){}};waits.nodes.set('[data-auth-email],[data-auth-login]',[emailButton,loginButton]);vm.runInContext('updateAuthWait()',waits.context);assert.equal(emailButton.disabled,true);assert.equal(loginButton.disabled,false);assert.match(emailButton.textContent,/Отправляем/);
+ releaseMail({error:null});await pendingMail;assert.equal(emailButton.disabled,true);assert.match(emailButton.textContent,/60 с/);assert.equal(loginButton.disabled,false);
+ waits.storage.set('est-ideya:auth-wait',JSON.stringify({email:Date.now()-1000,auth:0}));vm.runInContext('emailRetryAt=0;authRetryAt=0;updateAuthWait()',waits.context);assert.equal(emailButton.disabled,false);assert.equal(emailButton.textContent,'Отправить');
+ const quotaReload=harness(true,signup.storage);await flush();assert.throws(()=>vm.runInContext('authCooldown()',quotaReload.context),/Слишком много/);assert.doesNotThrow(()=>vm.runInContext('authCooldown(false)',quotaReload.context));
+ console.log('PASS: successful signup blocks immediate resend; deadlines persist across reload/tabs without emails or secrets; in-flight duplicate suppressed; visible countdown ends; password login stays available');
  console.log('PASS: real signup handler normalizes custom domain, uses correct redirect, explains provider quota and suppresses repeated sends');
 
  // Password recovery stays inside the SDK and waits until the auth lock releases.

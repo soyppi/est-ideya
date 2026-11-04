@@ -5,7 +5,8 @@
   "scripts": {
     "test": "node test-db.cjs && node test-client.cjs",
     "test:live": "node test-live.cjs",
-    "start": "node serve.cjs"
+    "start": "node serve.cjs",
+    "test:demo": "node test-demo-public.cjs"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.3.14"
