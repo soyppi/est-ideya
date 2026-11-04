@@ -99,6 +99,9 @@ const seed=fs.readFileSync(__dirname+'/demo_reset.sql','utf8');await db.exec(see
 assert.equal((await db.query('select count(*)::int n from ideas where id between -91007 and -91001')).rows[0].n,7);
 assert.equal((await as('anon',null,'select * from ideas where id between -91007 and -91001')).rows.length,6);
 assert.equal((await db.query('select count(distinct status)::int n from ideas where id between -91007 and -91001')).rows[0].n,5);
+await db.query(`update ideas set user_id=$1,created_at='2000-01-01' where id=-91001`,[bob]);await db.exec(seed);
+assert.equal((await db.query('select user_id,created_at from ideas where id=-91001')).rows[0].user_id,'00000000-0000-4000-8000-0000000000a1');
+await assert.rejects(()=>db.exec(seed.replace('voter@demo.est-ideya.invalid','author@demo.est-ideya.invalid')),/четырёх/);await db.exec('rollback');
 console.log('PASS: reproducible demo reset twice; seven fixtures; all five statuses; hidden idea excluded for guest.');
 // Ordinary publication must also work with direct INSERT unavailable, as on a
 // locked-down installation. The RPC is the only browser publication contract.
