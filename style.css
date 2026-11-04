@@ -59,3 +59,21 @@ body{background:#eaf2fa;color:var(--ink);font-family:'Segoe UI',Arial,sans-serif
 @media(max-width:600px){.avatar-options{grid-template-columns:repeat(4,minmax(0,1fr))}.people-search{align-items:stretch;flex-direction:column}.mobile-nav{grid-template-columns:repeat(5,1fr)}}
 
 .topbar nav{align-items:center}.topbar nav a,.topbar nav .nav-people{white-space:nowrap;line-height:1.3}
+
+/* Quiet blue scrollbars for long dialogs, discussions and text fields. */
+:where(.overlay,.modal,.modal textarea,.chat-messages){scrollbar-width:thin;scrollbar-color:#9aabeb #f1f4fc}
+.modal{scrollbar-gutter:stable;overscroll-behavior:contain}
+@supports selector(::-webkit-scrollbar){
+ :where(.overlay,.modal,.modal textarea,.chat-messages){scrollbar-width:auto}
+ :where(.overlay,.modal,.modal textarea,.chat-messages)::-webkit-scrollbar{width:10px;height:10px}
+ :where(.overlay,.modal,.modal textarea,.chat-messages)::-webkit-scrollbar-track{background:#f1f4fc;border-radius:999px;margin-block:16px}
+ :where(.overlay,.modal,.modal textarea,.chat-messages)::-webkit-scrollbar-thumb{background:#9aabeb;border:3px solid #f1f4fc;border-radius:999px;min-height:40px}
+ :where(.overlay,.modal,.modal textarea,.chat-messages)::-webkit-scrollbar-thumb:hover{background:#627fe5}
+ :where(.overlay,.modal,.modal textarea,.chat-messages)::-webkit-scrollbar-thumb:active{background:#3159f5}
+ :where(.overlay,.modal,.modal textarea,.chat-messages)::-webkit-scrollbar-corner{background:transparent}
+}
+@media(forced-colors:active){
+ :where(.overlay,.modal,.modal textarea,.chat-messages){scrollbar-color:auto;scrollbar-width:auto}
+ :where(.overlay,.modal,.modal textarea,.chat-messages)::-webkit-scrollbar-thumb{background:ButtonText;border-color:Canvas}
+ :where(.overlay,.modal,.modal textarea,.chat-messages)::-webkit-scrollbar-track{background:Canvas}
+}
